@@ -26,11 +26,11 @@ async function perform(message, csv) {
     response_format: { type: 'json_object' }
   })
 
-  return completion.choices[0].message.content
+  return JSON.parse(completion.choices[0].message.content)
 }
 
 const app = express();
-app.use(express.json()); // Used to parse JSON bodies
+app.use(express.json());
 
 app.get('/', (req, res) => {
   res.send("CSVAI\n");
@@ -48,9 +48,11 @@ app.post('/query', async (req, res) => {
 
   const answer = await perform(csv, prompt);
 
-  return res.json(
-    JSON.parse(answer)
-  );
+  if (answer.error) {
+    return res.status(400).json({ error: answer.error })
+  } else {
+    return res.json(answer.data);
+  }
 });
 
 app.listen(3000, '0.0.0.0', () => console.log('http://0.0.0.0:3000/'))
