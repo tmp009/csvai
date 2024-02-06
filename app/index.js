@@ -9,15 +9,21 @@ const { OpenAI } = require('openai');
 const openai = new OpenAI();
 
 const assistantPath = './assistant.json'
-const { createAssistant, runAssistant } = require('./lib/assistant');
+const { createAssistant, runAssistant } = require('./assistant');
+
+let assistantId;
 
 if (!fs.existsSync(assistantPath)) {
   createAssistant('CSVAI', 'You are a assistant that handles CSV data. Answer questions related to CSV data.')
-    .then(assistant => fs.writeFileSync(assistantPath, JSON.stringify({ id: assistant.id })))
+    .then(assistant => {
+      fs.writeFileSync(assistantPath, JSON.stringify({ id: assistant.id }));
+      assistantId = assistant.id;
+  })
     .catch(console.log)
-}
 
-const assistantId = require(assistantPath).id
+} else {
+  assistantId = require(assistantPath).id
+}
 
 async function perform(message, csv) {
   const messages = [
@@ -108,7 +114,12 @@ app.post('/thread/:threadId/query', async (req, res) => {
     return res.json(JSON.parse(cleanedData))
 
   } catch (error) {
-    return res.status(error.status).json({ error: `Failed to query thread: ${error.message}`})
+    if (error.status == 404) {
+      return res.status(404).json({ error: `Failed to query thread: the thread does not exist`})
+    } else {
+      console.log(error)
+      return res.status(500).json({ error: `Failed to query thread due to an error`})
+    }
   }
 
 })
