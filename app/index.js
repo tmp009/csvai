@@ -3,27 +3,10 @@ require('dotenv').config();
 const path = require('path');
 const express = require('express');
 
-const fs = require('fs')
-
-const { OpenAI } = require('openai');
+const { OpenAI, toFile } = require('openai');
 const openai = new OpenAI();
 
-const assistantPath = './assistant.json'
 const { createAssistant, runAssistant } = require('./assistant');
-
-let assistantId;
-
-if (!fs.existsSync(assistantPath)) {
-  createAssistant('CSVAI', 'You are a assistant that handles CSV data. Answer questions related to CSV data.')
-    .then(assistant => {
-      fs.writeFileSync(assistantPath, JSON.stringify({ id: assistant.id }));
-      assistantId = assistant.id;
-  })
-    .catch(console.log)
-
-} else {
-  assistantId = require(assistantPath).id
-}
 
 async function perform(message, csv) {
   const messages = [
@@ -75,25 +58,30 @@ app.post('/query', async (req, res) => {
 app.post('/thread/new', async (req, res) => {
   const csv = req.body.csv;
 
+  const file = await openai.files.create({
+    file: await toFile(Buffer.from(csv), 'data.csv') ,
+    purpose: "assistants"
+  });
+
   if (!csv) {
-    return res.status(400).json({ error: "Missing required parameter: csv" })
+    return res.status(400).json({ error: "Missing required parameter: csv" });
   }
 
+  const assistant = await createAssistant('CSVAI', 'You are a assistant that handles CSV data. Answer questions related to CSV data using code interpreter.', file.id);
+                    
   const thread = await openai.beta.threads.create({
     messages: [
       {
         role: 'user', content: 'Always return the data as a JSON array in a object with the key "data". If the question or task is vague or not a query for the CSV then return the reason as key "error" and always keep key "data" as an empty array.',
-      },
-      {
-        role: 'user', content: csv
       }
     ]
   });
 
-  return res.json({threadId: thread.id.replace('thread_', '')})
+  return res.json({threadId: thread.id.replace('thread_', ''), assistantId: assistant.id.replace('asst_', '')})
 });
 
-app.post('/thread/:threadId/query', async (req, res) => {
+app.post('/assistant/:assistantId/thread/:threadId/query', async (req, res) => {
+  const assistantId = 'asst_' + req.params.assistantId;
   const threadId = 'thread_' + req.params.threadId;
   const prompt = req.body.prompt;
 
@@ -107,15 +95,13 @@ app.post('/thread/:threadId/query', async (req, res) => {
         content:prompt
     })
       
-    const resp = await runAssistant(assistantId, threadId);
-  
-    const cleanedData = resp.content[0].text.value.replace(/^[\s\S]*?```json/, '').replace(/\s*```$/, '')
-    
-    return res.json(JSON.parse(cleanedData))
+    await runAssistant(assistantId, threadId);
+
+    return res.json({ status: 200 });
 
   } catch (error) {
     if (error.status == 404) {
-      return res.status(404).json({ error: `Failed to query thread: the thread does not exist`})
+      return res.status(404).json({ error: `Failed to query thread: ${error.message}`})
     } else {
       console.log(error)
       return res.status(500).json({ error: `Failed to query thread due to an error`})
@@ -124,12 +110,56 @@ app.post('/thread/:threadId/query', async (req, res) => {
 
 })
 
+app.get('/thread/:threadId', async (req, res) => {
+  const threadId = 'thread_' + req.params.threadId;
+
+  const messages = (await openai.beta.threads.messages.list(threadId)).data
+
+  if (!messages[0].assistant_id) {
+    return res.status(409).json({ error: 'A run is currently being started' })
+  }
+
+  const lastMessage = messages.filter((message=> message.role == 'assistant'))[0]
+
+  const run = await openai.beta.threads.runs.retrieve(threadId, lastMessage.run_id);
+
+  if (run.status == 'completed') {
+    const start = lastMessage.content[0].text.value.indexOf('{');
+    const end = lastMessage.content[0].text.value.lastIndexOf('}') + 1;
+
+    const cleanedData = lastMessage.content[0].text.value.substring(start, end)
+
+    try {
+      return res.json(JSON.parse(cleanedData))
+    } catch {
+    return res.status(500).json({ error: 'The run did not return json data' })
+    }
+
+  } else if (run.status == 'in_progress') {
+    return res.status(409).json({ error: 'A run is in progress' })
+  } else {
+    return res.status(500).json({ error: 'Run did not complete properly with status: ' + run.status })
+  }
+})
+
 app.delete('/thread/:threadId/', async (req, res) => {
   const threadId = 'thread_' + req.params.threadId;
 
   await openai.beta.threads.del(threadId) 
-    .then(()=> res.json({status: 200}))
+    .then(()=> res.json({ status: 200 }))
     .catch(error => { res.status(error.status).json({ error: `Failed to delete thread: ${error.message}`}) })
 })
 
-app.listen(3000, '0.0.0.0', () => console.log('http://0.0.0.0:3000/'))
+app.delete('/assistant/:assistantId/', async (req, res) => {
+  const assistantId = 'asst_' + req.params.assistantId;
+
+  try {
+    await openai.files.del((await openai.beta.assistants.retrieve(assistantId)).file_ids[0]);
+    await openai.beta.assistants.del(assistantId);
+    res.json({ status: 200 })
+  } catch (error) {
+    res.status(error.status).json({ error: `Failed to delete assistant: ${error.message}`})
+  }
+})
+
+app.listen(3000, 'localhost', () => console.log('http://0.0.0.0:3000/'))
