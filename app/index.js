@@ -154,7 +154,12 @@ app.delete('/assistant/:assistantId/', async (req, res) => {
   const assistantId = 'asst_' + req.params.assistantId;
 
   try {
-    await openai.files.del((await openai.beta.assistants.retrieve(assistantId)).file_ids[0]);
+    const file = (await openai.beta.assistants.retrieve(assistantId)).file_ids[0]
+
+    if (file) {
+      await openai.files.del(file);
+    }
+    
     await openai.beta.assistants.del(assistantId);
     res.json({ status: 200 })
   } catch (error) {
@@ -162,4 +167,4 @@ app.delete('/assistant/:assistantId/', async (req, res) => {
   }
 })
 
-app.listen(3000, 'localhost', () => console.log('http://0.0.0.0:3000/'))
+app.listen(3000, '0.0.0.0', () => console.log('http://0.0.0.0:3000/'))
